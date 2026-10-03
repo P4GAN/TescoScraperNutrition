@@ -43,10 +43,12 @@ F_NOT_FOR_SALE = 64
 F_LIQUID = 128      # values per 100 ml (1 litre is treated as 1 kg)
 F_MULTIBUY = 256    # Clubcard price is a multibuy ("Any 3 for £5"), shown per item
 F_YIELD = 512       # cooked values converted back to as-sold weight with the label's yield statement
+F_EDIBLE = 1024     # price/kg is per kg of edible food: a typical share for bone or eggshell left out
 FLAG_NAMES = {
     F_BAD_MACROS: "bad_macros", F_BAD_KCAL: "bad_kcal", F_BAD_PRICE: "bad_price",
     F_EST_WEIGHT: "est_weight", F_COOKED: "cooked", F_SCALED: "scaled",
     F_NOT_FOR_SALE: "not_for_sale", F_LIQUID: "liquid", F_MULTIBUY: "multibuy", F_YIELD: "yield_adjusted",
+    F_EDIBLE: "edible",
 }
 
 KCAL_PER_KJ = 1 / 4.184
@@ -388,10 +390,10 @@ def items_per_serving(header: str, title: str) -> int | None:
 
 
 def estimate_each_weight(title: str, rows: list[dict] | None, nut: dict | None, aisle: str) -> float | None:
-    """Pack weight in kg for an item sold 'each' with no pack size, from the title or the label."""
-    kg = title_weight_kg(title)
-    if kg:
-        return kg
+    """Pack weight in kg for an item sold 'each' with no pack size or title weight, from the label.
+
+    Egg weights are without the shell, like the label's 'One typical egg (61g)'.
+    """
     if rows and nut and nut.get("kcal"):
         header = rows[0]
         footer_servings = None
@@ -441,6 +443,47 @@ def estimate_each_weight(title: str, rows: list[dict] | None, nut: dict | None, 
             grams = next((g for size, g in EGG_WEIGHTS if size in lower), 55)
             return count * grams / 1000
     return None
+
+
+# ---------------------------------------------------------------- edible share (bone, eggshell)
+
+# Labels give nutrition for the edible part (meat off the bone, egg out of its shell), but the pack weight
+# includes the bone or shell. Wing labels show it: 19 g protein per 100 g, with ~46% of the weight bone,
+# would make the meat itself 35 g/100 g, more than any raw chicken. Edible shares are rough, from USDA
+# refuse figures. First match wins.
+BONE_IN_DEPARTMENT_RE = re.compile(r"meat|poultry|festive", re.I)
+BONELESS_RE = re.compile(
+    r"boneless|fillet|tender|strips?\b|pieces|diced|mince|slices|\bpie\b|plant|meat free|\bno-|isn'?t", re.I)
+EDIBLE_SHARES = [
+    (re.compile(r"thighs? (?:&|and) drumsticks?|drumsticks? (?:&|and) thighs?", re.I), 0.75),
+    (re.compile(r"\bwings\b", re.I), 0.54),
+    (re.compile(r"\bdrumsticks?\b", re.I), 0.70),
+    (re.compile(r"\b(?:chicken|duck|turkey) legs?\b|\bleg quarters?\b", re.I), 0.73),
+    (re.compile(r"\bthighs\b", re.I), 0.80),
+    (re.compile(r"\bwhole\b(?:\s+\S+){0,2}\s+(?:chicken|turkey|duck|goose)\b|\bwhole bird\b|turkey bird|"
+                r"spatchcock|poussin|half chicken", re.I), 0.68),
+    (re.compile(r"\bcrown\b", re.I), 0.80),  # breast on the bone
+    (re.compile(r"\blamb chops\b", re.I), 0.75),
+    (re.compile(r"\bchops\b", re.I), 0.80),
+    (re.compile(r"\bribs\b|\brib rack\b", re.I), 0.70),
+    (re.compile(r"\bshanks?\b", re.I), 0.70),
+    (re.compile(r"\blamb (?:\w+ )?leg joint\b|\bleg of lamb\b", re.I), 0.80),
+    (re.compile(r"bone[- ]in|on the bone|\d+[- ]bone|t-bone|tomahawk|wing rib", re.I), 0.85),
+]
+SHELL_EGG_SHARE = 0.88  # the shell is about 12% of an egg's weight
+
+
+def edible_share(title: str, department: str, aisle: str, gross_weight: bool) -> float:
+    """Share of the pack weight that the label's nutrition describes (1.0 when it's all edible).
+
+    gross_weight: the weight came from the pack size or title (eggs: with shells), not the label's serving size.
+    """
+    if aisle == "Eggs":
+        is_shell_egg = re.search(r"\beggs\b", title, re.I) and not re.search(r"liquid", title, re.I)
+        return SHELL_EGG_SHARE if is_shell_egg and gross_weight else 1.0
+    if not BONE_IN_DEPARTMENT_RE.search(department) or BONELESS_RE.search(title):
+        return 1.0
+    return next((share for pattern, share in EDIBLE_SHARES if pattern.search(title)), 1.0)
 
 
 # ---------------------------------------------------------------- prices
@@ -545,6 +588,7 @@ def build_record(tpnc: str, listed: dict, product: dict) -> dict:
     rows = (product.get("details") or {}).get("nutrition") or []
     nut = parse_nutrition(rows)
     aisle = listed.get("aisleName") or product.get("aisleName") or ""
+    department = listed.get("departmentName") or product.get("departmentName") or ""
 
     flags = 0
     kg, source = pack_kg(product, title)
@@ -557,9 +601,11 @@ def build_record(tpnc: str, listed: dict, product: dict) -> dict:
             kg = price / ppk
             source = "unit"
         elif uom == "each":
-            kg = estimate_each_weight(title, rows, nut, aisle)
+            kg, source = title_weight_kg(title), "title"
+            if not kg:
+                kg, source = estimate_each_weight(title, rows, nut, aisle), "estimate"
             if kg:
-                ppk, source = price / kg, "estimate"
+                ppk = price / kg
                 flags |= F_EST_WEIGHT
                 if not PPK_RANGE[0] <= ppk <= PPK_RANGE[1]:
                     kg = ppk = None
@@ -576,6 +622,14 @@ def build_record(tpnc: str, listed: dict, product: dict) -> dict:
     cc = clubcard_price(promotions, price, ppk, kg) if price else None
     if cc and cc[2]:
         flags |= F_MULTIBUY
+
+    # Price per kg of the part the label describes (after the unit price check above, which uses the pack weight).
+    edible = edible_share(title, department, aisle, gross_weight=source != "estimate")
+    if ppk is not None and edible < 1:
+        ppk /= edible
+        if cc and cc[1] is not None:
+            cc = (cc[0], cc[1] / edible, *cc[2:])
+        flags |= F_EDIBLE
 
     if nut:
         flags |= nut["_flags"]
@@ -600,7 +654,7 @@ def build_record(tpnc: str, listed: dict, product: dict) -> dict:
         "brand": listed.get("brandName") or product.get("brandName"),
         "image": listed.get("defaultImageUrl") or product.get("defaultImageUrl"),
         "categories": listed.get("categories") or [],
-        "department": listed.get("departmentName") or product.get("departmentName") or "",
+        "department": department,
         "aisle": aisle,
         "price": price,
         "kg": round(kg, 4) if kg else None,

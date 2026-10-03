@@ -338,6 +338,12 @@ function badgesFor(p) {
     badges.push(["check data", `Suspect label data: ${reasons.join("; ")}.`, true]);
   }
   if (p.flags & F.est_weight) badges.push(["~weight", "Tesco gives no pack weight; it was estimated from the label's serving size or the title."]);
+  if (p.flags & F.edible) {
+    const [part, food] = /\beggs\b/i.test(p.title) ? ["shell", "the egg without its shell"] : ["bone", "the meat"];
+    const share = Math.round((1 - p.price / p.ppk / p.kg) * 100);
+    badges.push([`minus ${part}`, `About ${share}% of the weight is ${part}. The label's nutrition is for ${food}, `
+      + `so price per kg and protein per £ leave the ${part} out.`]);
+  }
   if (p.flags & F.cooked) badges.push(["cooked values", "The label gives values for the cooked or prepared food, so protein per £ may be off."]);
   if (p.flags & F.scaled) badges.push(["per serving", "The label has no per 100 g column; values were scaled from a per-serving column."]);
   if (p.onClubcard && p.flags & F.multibuy) badges.push(["multibuy", "The Clubcard price needs a multibuy; shown per item."]);

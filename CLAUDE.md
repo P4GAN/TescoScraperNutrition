@@ -2,7 +2,7 @@
 
 Scrape Tesco UK grocery products (price + nutrition label) and publish a GitHub Pages site that ranks food by protein per £. The site filters out cheap-but-impractical protein (flour, potatoes) using protein share of calories and other label macros.
 
-**Roadmap and status live in [PLAN.md](PLAN.md).** Read it first, and tick items off as they're done.
+**Status:** the pipeline and site are done and live at https://p4gan.github.io/TescoScraperNutrition/ (repo `P4GAN/TescoScraperNutrition`). Known gaps and ideas are at the end of [README.md](README.md).
 
 ## Decisions already made (don't re-ask)
 - **Nutrients:** use Tesco label macros only (energy, fat, saturates, carbs, sugars, fibre, protein, salt). No micronutrient database for v1.
@@ -14,20 +14,19 @@ Scrape Tesco UK grocery products (price + nutrition label) and publish a GitHub 
 ```
 scraper/fetch.py      fetches raw listing + product JSON into data/raw/ (resumable; --limit, --skip-listing, --refresh)
 scraper/build.py      parses data/raw/ into docs/data.json (no API calls; --check TPNC prints one parsed record)
-scraper/scraping.py   v0 scraper (legacy, superseded by fetch.py + build.py)
-data/FreshFood.csv    v0 output for Fresh Food, April 2026 (legacy, has known bugs)
 data/raw/             raw API cache (gitignored): {tpnc}.json = {tpnc, fetched, product},
                       _listing.json = {categories: {label: {total, limit, tpncs}}, products: {tpnc: listing fields + categories}},
                       _failures.json = failures from the latest run
-notebooks/            exploration
+notebooks/            explore.ipynb loads docs/data.json into pandas with the site's metrics
 docs/                 GitHub Pages site: index.html, app.js (filter/rank/chart, vanilla JS), style.css,
-                      data.json (built; committed). Test with `python -m http.server -d docs`
+                      data.json (built; committed), screenshot.png + screenshot-dark.png (README).
+                      Test with `python -m http.server -d docs`
 .env                  TESCO_API_KEY (gitignored; see .env.example)
 ```
 Python env: the user's anaconda Python 3.11 (`pandas`, `requests`, `python-dotenv`).
 
 ## Tesco API: verified facts (2026-09-28)
-- **Request:** a GraphQL `POST` to `https://xapi.tesco.com/`. Headers are in `scraper/scraping.py` (`x-apikey` comes from `.env`, plus `region: UK` and `language: en-GB`).
+- **Request:** a GraphQL `POST` to `https://xapi.tesco.com/`. Headers are in `scraper/fetch.py` (`x-apikey` comes from `.env`, plus `region: UK` and `language: en-GB`).
 - **Category facet:** `"b;" + base64(encodeURI(label))`. `&` is **not** percent-encoded (`Treats%20&%20Snacks`). `build_category_facet` handles this.
 - **Top-level category sizes:**
 
@@ -41,7 +40,7 @@ Python env: the user's anaconda Python 3.11 (`pandas`, `requests`, `python-doten
 
   Categories **overlap** (e.g. Muller Corner yogurts are in both Fresh Food and Treats & Snacks), so dedupe by `tpnc` and keep every category a product belongs to.
 - **Listing query:** `category(facet, offset, count) { info { total } products { ... } }`. Verified `products` fields: `tpnc tpnb adId title brandName departmentName aisleName shelfName defaultImageUrl averageWeight price { actual unitPrice unitOfMeasure } promotions { ... }`.
-  - Pages include **sponsored items** (non-null `adId`) *on top of* `count` organic items (asked 50, got 53). Skip ads, and advance `offset` by the number of **organic** items. The v0 scraper advanced by the total, so it skipped products: 4448 unique in the CSV vs 4769 listed.
+  - Pages include **sponsored items** (non-null `adId`) *on top of* `count` organic items (asked 50, got 53). Skip ads, and advance `offset` by the number of **organic** items. An earlier scraper advanced by the total and so skipped products (4448 of 4769 Fresh Food).
   - The listing does **not** return nutrition. That needs one `product(tpnc)` call per product (~0.5 s each).
 - **Batching:** putting several `product()` calls in one request with GraphQL aliases returns **HTTP 400**, so it's one request per product. Use 3–4 concurrent workers at most, plus retry/backoff.
 - **Rate limit:** at about 2 req/s some requests get HTTP 429 with `Retry-After: 1`, `X-RateLimit-Limit: 100`, `X-RateLimit-Reset: 1` (the limit is probably shared by everyone using the public key). `fetch.py` caps all workers together at 2 req/s: about 5% of requests get a 429 and all of them succeed on retry.
@@ -51,7 +50,7 @@ Python env: the user's anaconda Python 3.11 (`pandas`, `requests`, `python-doten
     - "Each" items have `[{"value": null, "units": "SNGL"}]`, `averageWeight` null/0 and no weight in the title. For eggs, the nutrition header has one (`"One typical egg (61g)"`).
     - Loose items sold by weight (`Tesco Bananas Loose`) have an empty `packSize` and `unitOfMeasure: kg`.
 - **Nutrition rows:** a list of `{name, value1..value4}`. The first row, `name: "Typical Values"`, is the **header**. Pick the column whose header says per 100g/100ml. Don't assume `value1`.
-  - Usually `value1 = "Per 100g"`, but e.g. The Gym Kitchen meals have `value1 = "(microwaved) Per pack"` and `value2 = "(microwaved) Per 100g"`. v0 read the per-pack value (59 g protein) as per 100g.
+  - Usually `value1 = "Per 100g"`, but e.g. The Gym Kitchen meals have `value1 = "(microwaved) Per pack"` and `value2 = "(microwaved) Per 100g"`. An earlier scraper read the per-pack value (59 g protein) as per 100g.
   - Header wording varies: `100g contains`, `per 100 g:`, `As sold Per 100g`, `Per 100g (pan-fried)`, `100g of Sausage, as sold, contains`, `Per 100g 74g (2 tubes)`.
   - Some tables have **two** `Per 100g` columns where the second is empty (`"null / null"`, `""`), e.g. Tesco chicken breasts. Others have a `% per 100g` %RI column (Dairylea). So pick the first per-100g column that has values and doesn't start with `%`.
   - Some values are for the cooked product: `(pan-fried)` in the header, or a footer row like `When boiled according to instructions.`
@@ -76,7 +75,8 @@ Python env: the user's anaconda Python 3.11 (`pandas`, `requests`, `python-doten
   - More nutrition formats: `2506/603 kJ/kcal`, `824 kJ (10%*)`, `Fat` = `(194kcal)` (energy spilling into the next row), `Protien` (sic), US-style labels (`Calories`, `Calories from Fat`, per 14g serving), water analyses in mg/l.
   - More Clubcard formats: `75p Clubcard Price`, `£1.50 per kg Clubcard Price` (loose), `Save 25% £1.50 per kg Clubcard Price`, `Any 3 for 2 Clubcard Price - Cheapest Product Free`, `CC DFNS 3 FOR 2 C/F`, and meal deals (`£N Meal Deal Snack Clubcard Price …`, `STIR FRY Meal Deal for £N …`), which `build.py` ignores. Non-Clubcard promotions (`Save £1`) are already in `price.actual`.
   - Some titles have mojibake (`CrÃ¨me`); `build.py` repairs it.
-  - Image CDN: `defaultImageUrl` takes `?h=&w=` resize parameters. Akamai returns 403 to the `HeadlessChrome` user agent (not to normal browsers or curl), so thumbnails look broken in headless screenshots.
+  - Bone-in meat labels give values for the meat only (wings: 19 g protein/100 g, impossible if the ~46% bone were included), but `packSize` is the weight with bone. Same for eggs: a `packSize` or title weight (`805 G` for 15 eggs) includes shells, while the label's `One typical egg (47g)` doesn't. `build.py` divides price/kg by a typical edible share (`EDIBLE_SHARES`, eggshell 12%) and sets the `edible` flag.
+  - Image CDN: `defaultImageUrl` takes `?h=&w=` resize parameters. Akamai returns 403 to the `HeadlessChrome` user agent (not to normal browsers or curl), so thumbnails look broken in headless screenshots. Passing a desktop Chrome `--user-agent` fixes it; the README screenshots were taken that way (`--headless=new --blink-settings=preferredColorScheme=1|0 --window-size=1280,1382`). Headless Chrome may not exit after `--screenshot`, so wrap it in a timeout.
 - **Product page URL:** `https://www.tesco.com/groceries/en-GB/products/{tpnc}`
 
 ## Conventions
