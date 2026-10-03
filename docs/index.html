@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tesco Protein Finder</title>
+  <meta name="description" content="Which Tesco foods give the most protein per pound, without counting cheap-but-impractical protein like flour or potatoes.">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="page-header">
+    <h1>Tesco Protein Finder</h1>
+    <p class="lede">Tesco food ranked by grams of protein per pound. By default it hides foods that get less than a quarter of their calories from protein, so flour, bread and potatoes don't top the list.</p>
+  </header>
+
+  <main>
+    <form class="controls" id="controls" autocomplete="off" onsubmit="return false">
+      <div class="control-row">
+        <label class="field field-search">
+          <span class="field-label">Search</span>
+          <input type="search" id="q" placeholder="e.g. chicken, lentils, skyr">
+        </label>
+        <label class="field">
+          <span class="field-label">Category</span>
+          <select id="cat"><option value="">All categories</option></select>
+        </label>
+        <label class="field">
+          <span class="field-label">Department</span>
+          <select id="dept"><option value="">All departments</option></select>
+        </label>
+        <label class="field">
+          <span class="field-label">Aisle</span>
+          <select id="aisle"><option value="">All aisles</option></select>
+        </label>
+      </div>
+
+      <div class="control-row">
+        <fieldset class="field">
+          <legend class="field-label">Price</legend>
+          <div class="segmented" role="radiogroup">
+            <label><input type="radio" name="price" value="shelf" checked><span>Shelf</span></label>
+            <label><input type="radio" name="price" value="clubcard"><span>Clubcard</span></label>
+          </div>
+          <label class="check check-inline" id="multibuy-wrap">
+            <input type="checkbox" id="multibuy" checked> Count multibuy deals
+          </label>
+        </fieldset>
+
+        <label class="field field-range">
+          <span class="field-label">Min. protein share of calories <output id="share-out">25%</output></span>
+          <input type="range" id="share" min="0" max="90" step="5" value="25">
+        </label>
+
+        <fieldset class="field">
+          <legend class="field-label">Max. per 100 g</legend>
+          <div class="limits">
+            <label>Salt <input type="number" id="salt" min="0" step="0.1" inputmode="decimal" placeholder="any"> g</label>
+            <label>Sat. fat <input type="number" id="sat" min="0" step="0.5" inputmode="decimal" placeholder="any"> g</label>
+            <label>Sugar <input type="number" id="sugar" min="0" step="0.5" inputmode="decimal" placeholder="any"> g</label>
+          </div>
+        </fieldset>
+      </div>
+
+      <div class="control-row checks">
+        <label class="check"><input type="checkbox" id="hide-suspect" checked> Hide suspect data</label>
+        <label class="check"><input type="checkbox" id="hide-unranked" checked> Hide items with no weight</label>
+        <label class="check"><input type="checkbox" id="hide-estimated"> Hide estimated weights</label>
+        <label class="check"><input type="checkbox" id="hide-cooked"> Hide cooked-value labels</label>
+        <label class="check"><input type="checkbox" id="hide-unavailable"> Hide unavailable</label>
+        <label class="check"><input type="checkbox" id="best-only"> Best value only</label>
+        <button type="button" class="link-button" id="reset">Reset filters</button>
+      </div>
+    </form>
+
+    <p class="summary" id="summary" aria-live="polite">Loading…</p>
+
+    <section class="card chart-card" aria-labelledby="chart-title">
+      <div class="card-head">
+        <h2 id="chart-title">Protein per £ against protein share of calories</h2>
+        <ul class="legend">
+          <li><span class="key key-best"></span>Best value <span class="muted">(nothing beats it on both axes)</span></li>
+          <li><span class="key key-other"></span>Other matching products</li>
+        </ul>
+      </div>
+      <div class="chart-box"><canvas id="chart" role="img" aria-label="Scatter plot of matching products. The table below lists the same products."></canvas></div>
+    </section>
+
+    <section class="card table-card" aria-label="Matching products">
+      <div class="table-scroll">
+        <table id="table">
+          <thead>
+            <tr>
+              <th scope="col" data-sort="title" class="col-product">Product</th>
+              <th scope="col" data-sort="gpp" class="num" title="Grams of protein you get for £1">Protein<br><span class="unit">g per £</span></th>
+              <th scope="col" data-sort="share" class="num" title="Share of calories that come from protein (4 kcal per gram)">Protein<br><span class="unit">% kcal</span></th>
+              <th scope="col" data-sort="priceActive" class="num">Price</th>
+              <th scope="col" data-sort="ppkActive" class="num">£/kg</th>
+              <th scope="col" data-sort="protein" class="num" title="Protein per 100 g (or 100 ml)">Protein<br><span class="unit">g/100g</span></th>
+              <th scope="col" data-sort="pp100" class="num" title="What 100 g of protein costs">Cost<br><span class="unit">per 100g protein</span></th>
+              <th scope="col" data-sort="kcal" class="num">kcal<br><span class="unit">/100g</span></th>
+              <th scope="col" data-sort="sat" class="num">Sat. fat<br><span class="unit">g</span></th>
+              <th scope="col" data-sort="sugar" class="num">Sugar<br><span class="unit">g</span></th>
+              <th scope="col" data-sort="fibre" class="num">Fibre<br><span class="unit">g</span></th>
+              <th scope="col" data-sort="salt" class="num">Salt<br><span class="unit">g</span></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="table-foot">
+        <button type="button" class="button" id="more" hidden>Show more</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <p id="data-note"></p>
+    <details>
+      <summary>How this works</summary>
+      <ul>
+        <li><strong>Protein per £</strong> = protein per 100 g × 10 ÷ price per kg. Clubcard mode uses the Clubcard price where there is one. A multibuy ("Any 3 for £5") counts as the price per item when you buy the full deal. Meal deals are ignored.</li>
+        <li><strong>Protein share of calories</strong> = 4 kcal × grams of protein ÷ kcal. It filters out cheap but impractical protein. Rough values: potatoes 11%, flour and bread 12–13%, peanuts 18%, milk 29%, lentils 30%, eggs 38%, chicken breast 90%.</li>
+        <li><strong>Best value</strong> products are on the frontier: no other matching product has both more protein per £ and a higher protein share. The frontier is recomputed for whatever you filter.</li>
+        <li>Values come from the nutrition label: the per 100 g (or per 100 ml) column, with 1 litre counted as 1 kg. If the label gives cooked values and says how much the food weighs once cooked ("400g typically weighs 354g"), the values are converted back to as-sold weight. Otherwise the product gets a <em>cooked values</em> badge.</li>
+        <li>Items sold "each" (eggs, rolls, sandwiches) have no pack weight from Tesco. Where possible, the weight is estimated from the label's serving size and the count in the title, and the product gets a <em>~weight</em> badge.</li>
+        <li><strong>Suspect data</strong>: the macros add up to more than 100 g, the listed kcal don't match protein, carbs and fat, or the price per kg is implausible. These products are usually label errors on Tesco's site.</li>
+        <li>Bone-in meat (drumsticks, wings, whole birds) is ranked on its weight including the bone.</li>
+      </ul>
+    </details>
+    <p class="muted">Not affiliated with Tesco. Prices and labels change, so check the product page before you rely on a number.</p>
+  </footer>
+</body>
+</html>
